@@ -97,6 +97,8 @@ services:
           fi
           sed "s|__SEARXNG_SECRET__|$$secret|g" /tmp/searxng-settings.yml.template > /etc/searxng/settings.yml
         fi
+        # Pre-initialize the engines cache to avoid race conditions during worker startup
+        /usr/local/searxng/.venv/bin/python3 -c 'from searx.enginelib import ENGINES_CACHE; ENGINES_CACHE.get("init")'
         exec /usr/local/searxng/entrypoint.sh
     ports:
       - "127.0.0.1:8080:8080"
