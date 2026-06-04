@@ -3,6 +3,7 @@
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from core.middleware import require_admin
@@ -12,7 +13,42 @@ from src.settings import load_settings, save_settings, load_features, save_featu
 logger = logging.getLogger(__name__)
 
 
-def setup_backup_routes(memory_manager, preset_manager, skills_manager) -> APIRouter:
+def _as_list(value):
+    if isinstance(value, list):
+        return [str(item) for item in value if item not in (None, "")]
+    if value in (None, ""):
+        return []
+    return [str(value)]
+
+
+def _as_float(value, default=0.8):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_text(value):
+    return str(value).strip() if value not in (None, "") else ""
+
+
+def _owner_key(owner):
+    return _as_text(owner)
+
+
+def _skill_id(skill):
+    return _as_text(skill.get("id") or skill.get("name"))
+
+
+def _skill_label(skill):
+    for key in ("title", "description", "name", "id"):
+        value = _as_text(skill.get(key))
+        if value:
+            return value
+    return ""
+
+
+def setup_backup_routes(memory_manager, preset_manager, skills_manager, research_handler=None) -> APIRouter:
     router = APIRouter(tags=["backup"])
 
     @router.get("/api/export")
@@ -29,6 +65,21 @@ def setup_backup_routes(memory_manager, preset_manager, skills_manager) -> APIRo
 
         # Skills (filtered by owner when auth is enabled)
         skills = skills_manager.load(owner=user)
+
+        # Deep Research (stored as files; load into JSON)
+        research = []
+        research_dir = Path("data/deep_research")
+        if research_dir.is_dir():
+            for p in research_dir.glob("*.json"):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    # Filter by owner if possible
+                    if user and data.get("owner") and data.get("owner") != user:
+                        continue
+                    research.append({"id": p.stem, "data": data})
+                except Exception:
+                    continue
 
         # Settings
         settings = load_settings()
@@ -47,6 +98,7 @@ def setup_backup_routes(memory_manager, preset_manager, skills_manager) -> APIRo
             "memories": memories,
             "presets": presets,
             "skills": skills,
+            "research": research,
             "settings": settings,
             "features": features,
             "preferences": preferences,
@@ -100,26 +152,89 @@ def setup_backup_routes(memory_manager, preset_manager, skills_manager) -> APIRo
 
         # ── Skills ──
         if "skills" in body and isinstance(body["skills"], list):
+            # Map existing for scoped dedup
             existing = skills_manager.load_all()
-            existing_ids = {s.get("id") for s in existing}
-            existing_titles = {s.get("title", "").strip().lower() for s in existing}
+            # (owner, id) and (owner, title)
+            existing_ids = {(_owner_key(s.get("owner")), _skill_id(s)) for s in existing}
+            existing_titles = {(_owner_key(s.get("owner")), _as_text(s.get("title", "")).lower()) for s in existing}
+
             added = 0
             for skill in body["skills"]:
-                if not isinstance(skill, dict) or not skill.get("title"):
+                if not isinstance(skill, dict) or not _skill_label(skill):
                     continue
-                # Skip if same id or same title already exists
-                if skill.get("id") in existing_ids:
+
+                target_owner = _owner_key(user or skill.get("owner"))
+                sid = _skill_id(skill)
+                title = _as_text(skill.get("title") or skill.get("description") or skill.get("name"))
+
+                # Skip if same id or same title already exists for THIS user
+                if (target_owner, sid) in existing_ids:
                     continue
-                if skill["title"].strip().lower() in existing_titles:
+                if title and (target_owner, title.lower()) in existing_titles:
                     continue
-                if user and not skill.get("owner"):
-                    skill["owner"] = user
-                existing.append(skill)
-                existing_ids.add(skill.get("id"))
-                existing_titles.add(skill["title"].strip().lower())
-                added += 1
-            skills_manager.save(existing)
+
+                # Add via manager (handles disk-backing)
+                result = skills_manager.add_skill(
+                    title=title,
+                    problem=_as_text(skill.get("problem") if skill.get("problem") is not None else skill.get("when_to_use")),
+                    solution=_as_text(skill.get("solution") if skill.get("solution") is not None else skill.get("body_extra")),
+                    steps=_as_list(skill.get("steps") if skill.get("steps") is not None else skill.get("procedure")),
+                    tags=_as_list(skill.get("tags")),
+                    source=_as_text(skill.get("source")) or "imported",
+                    teacher_model=skill.get("teacher_model"),
+                    confidence=_as_float(skill.get("confidence")),
+                    owner=user or skill.get("owner"),
+                    # New-schema fields
+                    name=_as_text(skill.get("name")),
+                    description=_as_text(skill.get("description")),
+                    category=_as_text(skill.get("category")) or "general",
+                    when_to_use=_as_text(skill.get("when_to_use")),
+                    procedure=_as_list(skill.get("procedure")),
+                    pitfalls=_as_list(skill.get("pitfalls")),
+                    verification=_as_list(skill.get("verification")),
+                    platforms=_as_list(skill.get("platforms")),
+                    requires_toolsets=_as_list(skill.get("requires_toolsets")),
+                    fallback_for_toolsets=_as_list(skill.get("fallback_for_toolsets")),
+                    status=_as_text(skill.get("status")) or "published",
+                    version=_as_text(skill.get("version")) or "1.0.0",
+                    body_extra=_as_text(skill.get("body_extra")),
+                    created=_as_text(skill.get("created")),
+                    uses=int(skill.get("uses", 0)),
+                    last_used=skill.get("last_used"),
+                )
+                if isinstance(result, dict) and not result.get("_deduped"):
+                    added += 1
+                    # Update local dedup maps
+                    existing_ids.add((target_owner, sid))
+                    if title:
+                        existing_titles.add((target_owner, title.lower()))
+
             imported.append(f"{added} skills")
+
+        # ── Deep Research ──
+        if "research" in body and isinstance(body["research"], list):
+            added = 0
+            research_dir = Path("data/deep_research")
+            research_dir.mkdir(parents=True, exist_ok=True)
+            for item in body["research"]:
+                if not isinstance(item, dict) or "id" not in item or "data" not in item:
+                    continue
+                rid = item["id"]
+                data = item["data"]
+                # Skip if already exists on disk
+                target = research_dir / f"{rid}.json"
+                if target.exists():
+                    continue
+                # Assign owner
+                if user and not data.get("owner"):
+                    data["owner"] = user
+                try:
+                    with open(target, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                    added += 1
+                except Exception:
+                    continue
+            imported.append(f"{added} research runs")
 
         # ── Presets ──
         if "presets" in body and isinstance(body["presets"], dict):

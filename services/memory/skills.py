@@ -315,6 +315,10 @@ class SkillsManager:
         fallback_for_toolsets: Optional[List[str]] = None,
         status: str = "draft",
         version: str = "1.0.0",
+        body_extra: Optional[str] = None,
+        created: Optional[str] = None,
+        uses: int = 0,
+        last_used: Optional[int] = None,
     ) -> Dict:
         # Normalize name
         nm = slugify(name or title or description or "skill")
@@ -371,13 +375,26 @@ class SkillsManager:
             source=source,
             teacher_model=teacher_model,
             owner=owner,
+            created=str(created or ""),
             when_to_use=(when_to_use if when_to_use is not None else (problem or "")),
             procedure=list(procedure if procedure is not None else (steps or [])),
             pitfalls=list(pitfalls or []),
             verification=list(verification or []),
-            body_extra=(solution if solution and not procedure else ""),
+            body_extra=(body_extra if body_extra is not None else (solution if solution and not procedure else "")),
+            uses=uses,
+            last_used=last_used,
         )
         self._write_skill(sk)
+
+        # Update usage sidecar if needed
+        if uses > 0 or last_used:
+            usage = self._load_usage()
+            key = self._usage_key(sk.name, sk.owner)
+            entry = usage.setdefault(key, {"uses": 0, "last_used": None})
+            entry["uses"] = max(entry.get("uses", 0), uses)
+            if last_used:
+                entry["last_used"] = max(entry.get("last_used") or 0, last_used)
+            self._save_usage(usage)
 
         return sk.to_dict()
 

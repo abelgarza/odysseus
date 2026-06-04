@@ -32,7 +32,7 @@ def _setup(monkeypatch, store, user="alice"):
 
     skills = MagicMock()
     skills.load_all.return_value = []
-    router = br.setup_backup_routes(mem, MagicMock(), skills)
+    router = br.setup_backup_routes(mem, MagicMock(), skills, MagicMock())
     endpoint = None
     for r in router.routes:
         if r.path == "/api/import" and "POST" in getattr(r, "methods", set()):
