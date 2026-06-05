@@ -7,7 +7,7 @@ for mod in ['src.agent_tools', 'src.tool_parsing', 'src.tool_schemas', 'src.tool
 
 # Mock heavy database/model dependencies before importing
 for mod in [
-    'sqlalchemy', 'sqlalchemy.orm', 'sqlalchemy.ext', 'sqlalchemy.ext.declarative',
+    'sqlalchemy', 'sqlalchemy.orm', 'sqlalchemy.ext', 'sqlalchemy.orm',
     'sqlalchemy.ext.hybrid', 'sqlalchemy.sql', 'sqlalchemy.sql.expression',
     'src.database', 'core.models', 'core.database', 'core.auth'
 ]:
