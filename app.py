@@ -660,7 +660,7 @@ app.include_router(setup_prefs_routes())
 
 # Backup (export/import user data)
 from routes.backup_routes import setup_backup_routes
-app.include_router(setup_backup_routes(memory_manager, preset_manager, skills_manager))
+app.include_router(setup_backup_routes(memory_manager, preset_manager, skills_manager, research_handler))
 
 from routes.font_routes import setup_font_routes
 app.include_router(setup_font_routes())
